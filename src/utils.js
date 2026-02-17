@@ -36,12 +36,17 @@ function cleanText(text) {
   tempDiv.innerHTML = text;
   const decodedText = tempDiv.textContent || tempDiv.innerText || '';
   
-  return decodedText
-    .trim()
-    // Clean up whitespace
-    .replace(/\n\s+/g, '\n') // Remove extra whitespace
-    .replace(/\u00A0/g, ' ') // Replace non-breaking spaces
-    .replace(/\s+/g, ' '); // Normalize whitespace
+  // Preserve line breaks so fenced code blocks remain valid.
+  const normalized = decodedText
+    .replace(/\r\n?/g, '\n')
+    .replace(/\u00A0/g, ' ');
+
+  return normalized
+    .split('\n')
+    .map(line => line.replace(/[ \t]+/g, ' ').trim())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 /**

@@ -769,7 +769,7 @@ function convertToMarkdown(messages, channelName, config) {
     }
   }
   
-  return markdown;
+  return normalizeFenceBoundaries(markdown);
 }
 
 /**
@@ -792,7 +792,7 @@ function convertToHtml(messages, channelName, config) {
  */
 function convertMarkdownToHtmlDocument(markdown, channelName) {
   const safeTitle = escapeHtml(channelName || 'SlackSnap Export');
-  const bodyHtml = markdownToBasicHtml(markdown || '');
+  const bodyHtml = markdownToBasicHtml(normalizeFenceBoundaries(markdown || ''));
 
   return `<!doctype html>
 <html lang="en">
@@ -819,6 +819,49 @@ ${bodyHtml}
 }
 
 /**
+ * Normalize malformed fence boundaries so trailing text does not remain inside <pre>.
+ * @param {string} markdown
+ * @returns {string}
+ */
+function normalizeFenceBoundaries(markdown) {
+  const lines = String(markdown || '').replace(/\r\n/g, '\n').split('\n');
+  const out = [];
+  let inCodeBlock = false;
+  let codeFenceMarker = null;
+
+  for (const rawLine of lines) {
+    const line = rawLine || '';
+    const trimmed = line.trim();
+    const openFenceMatch = trimmed.match(/^(```|~~~)\s*[A-Za-z0-9_-]*\s*$/);
+
+    if (!inCodeBlock && openFenceMatch) {
+      inCodeBlock = true;
+      codeFenceMarker = openFenceMatch[1];
+      out.push(trimmed);
+      continue;
+    }
+
+    if (inCodeBlock) {
+      const startsWithFence = trimmed.startsWith(codeFenceMarker || '');
+      if (startsWithFence) {
+        const trailing = trimmed.slice(codeFenceMarker.length).trim();
+        out.push(codeFenceMarker);
+        inCodeBlock = false;
+        codeFenceMarker = null;
+        if (trailing) {
+          out.push(trailing);
+        }
+        continue;
+      }
+    }
+
+    out.push(line);
+  }
+
+  return out.join('\n');
+}
+
+/**
  * Convert markdown subset used by exports into HTML.
  * @param {string} markdown
  * @returns {string}
@@ -842,8 +885,8 @@ function markdownToBasicHtml(markdown) {
     const line = rawLine || '';
     const trimmedForFence = line.trim();
     const openFenceMatch = trimmedForFence.match(/^(```|~~~)\s*[A-Za-z0-9_-]*\s*$/);
-    const closeFenceMatch = codeFenceMarker
-      ? trimmedForFence.match(new RegExp(`^${codeFenceMarker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`))
+    const closeFenceWithTailMatch = inCodeBlock && codeFenceMarker
+      ? trimmedForFence.match(new RegExp(`^${codeFenceMarker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(.*)$`))
       : null;
 
     if (!inCodeBlock && openFenceMatch) {
@@ -856,10 +899,14 @@ function markdownToBasicHtml(markdown) {
       continue;
     }
 
-    if (inCodeBlock && closeFenceMatch) {
+    if (inCodeBlock && closeFenceWithTailMatch) {
       html.push(`<pre><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`);
       inCodeBlock = false;
       codeFenceMarker = null;
+      const trailing = (closeFenceWithTailMatch[1] || '').trim();
+      if (trailing) {
+        html.push(`<p>${inlineMarkdownToHtml(trailing)}</p>`);
+      }
       continue;
     }
 
