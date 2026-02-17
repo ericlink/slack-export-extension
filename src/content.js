@@ -828,6 +828,15 @@ function normalizeFenceBoundaries(markdown) {
   const out = [];
   let inCodeBlock = false;
   let codeFenceMarker = null;
+  const messageHeaderPattern = /^\*\*.+\*\* \([^)]+\):$/;
+
+  const closeFenceIfOpen = () => {
+    if (inCodeBlock && codeFenceMarker) {
+      out.push(codeFenceMarker);
+      inCodeBlock = false;
+      codeFenceMarker = null;
+    }
+  };
 
   for (const rawLine of lines) {
     const line = rawLine || '';
@@ -842,6 +851,30 @@ function normalizeFenceBoundaries(markdown) {
     }
 
     if (inCodeBlock) {
+      // Guardrail: never let malformed fences swallow the next message block.
+      if (messageHeaderPattern.test(trimmed)) {
+        closeFenceIfOpen();
+        out.push(line);
+        continue;
+      }
+
+      // Handle inline closing fences: "code...```" or "code...~~~".
+      const inlineCloseIndex = (codeFenceMarker ? line.indexOf(codeFenceMarker) : -1);
+      if (inlineCloseIndex >= 0) {
+        const codePart = line.slice(0, inlineCloseIndex);
+        const trailing = line.slice(inlineCloseIndex + codeFenceMarker.length).trim();
+        if (codePart) {
+          out.push(codePart);
+        }
+        out.push(codeFenceMarker);
+        inCodeBlock = false;
+        codeFenceMarker = null;
+        if (trailing) {
+          out.push(trailing);
+        }
+        continue;
+      }
+
       const startsWithFence = trimmed.startsWith(codeFenceMarker || '');
       if (startsWithFence) {
         const trailing = trimmed.slice(codeFenceMarker.length).trim();
@@ -855,9 +888,41 @@ function normalizeFenceBoundaries(markdown) {
       }
     }
 
+    if (!inCodeBlock) {
+      // Normalize inline full fences in a single line: "prefix ```code``` suffix".
+      const inlineFullFenceMatch = line.match(/^(.*?)(```|~~~)(.+?)\2(.*)$/);
+      if (inlineFullFenceMatch) {
+        const [, prefix, marker, code, suffix] = inlineFullFenceMatch;
+        if (prefix && prefix.trim()) {
+          out.push(prefix.trimEnd());
+        }
+        out.push(marker);
+        out.push(code);
+        out.push(marker);
+        if (suffix && suffix.trim()) {
+          out.push(suffix.trimStart());
+        }
+        continue;
+      }
+
+      // Normalize trailing opening fences: "text ...```".
+      const trailingOpenFenceMatch = line.match(/^(.*?)(```|~~~)\s*$/);
+      if (trailingOpenFenceMatch) {
+        const [, prefix, marker] = trailingOpenFenceMatch;
+        if (prefix && prefix.trim()) {
+          out.push(prefix.trimEnd());
+        }
+        inCodeBlock = true;
+        codeFenceMarker = marker;
+        out.push(marker);
+        continue;
+      }
+    }
+
     out.push(line);
   }
 
+  closeFenceIfOpen();
   return out.join('\n');
 }
 
