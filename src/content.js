@@ -1208,24 +1208,40 @@ function getCurrentChannelId() {
     console.log('🔍 Detecting current channel ID...');
     console.log('📍 URL:', window.location.href);
     
-    // Method 1: Extract from URL patterns
+    // Method 1: Extract only real conversation IDs from URL patterns.
+    // Slack can also use user handles in URLs (e.g. /messages/@alice), which are not valid API IDs.
     const urlPatterns = [
-      /\/messages\/([^\/\?]+)/,           // /messages/CHANNEL_ID
-      /\/archives\/([^\/\?]+)/,           // /archives/CHANNEL_ID  
-      /\/channels\/([^\/\?]+)/,           // /channels/CHANNEL_NAME
-      /\/client\/[^\/]+\/([^\/\?]+)/,     // /client/TEAM/CHANNEL
+      /\/messages\/([^\/\?]+)/,        // /messages/...
+      /\/archives\/([^\/\?]+)/,        // /archives/...
+      /\/channels\/([^\/\?]+)/,        // /channels/...
+      /\/client\/[^\/]+\/([^\/\?]+)/, // /client/TEAM/...
     ];
-    
     for (const pattern of urlPatterns) {
       const match = window.location.pathname.match(pattern);
-      if (match) {
-        const channelId = match[1];
-        console.log('✅ Found channel ID from URL:', channelId);
-        return channelId;
+      if (!match) continue;
+      const candidate = match[1];
+      if (isSlackConversationId(candidate)) {
+        console.log('✅ Found channel ID from URL:', candidate);
+        return candidate;
+      }
+      console.log('ℹ️ URL candidate is not a conversation ID:', candidate);
+    }
+
+    // Method 2: Scan common link targets (sidebar/current conversation links).
+    const hrefEls = document.querySelectorAll('a[href*="/client/"], a[href*="/archives/"], a[href*="/messages/"]');
+    for (const el of hrefEls) {
+      const href = el.getAttribute('href') || '';
+      const idMatch = href.match(/([CDG][A-Z0-9]{8,})/i);
+      if (idMatch) {
+        const candidate = idMatch[1].toUpperCase();
+        if (isSlackConversationId(candidate)) {
+          console.log('✅ Found channel ID from page link:', candidate);
+          return candidate;
+        }
       }
     }
     
-    // Method 2: Try to get from page context or localStorage
+    // Method 3: Try to get from page context or localStorage
     // Slack often stores current channel in various places
     const config = JSON.parse(localStorage.getItem('localConfig_v2') || '{}');
     console.log('📋 Slack config keys:', Object.keys(config));
@@ -1237,6 +1253,16 @@ function getCurrentChannelId() {
     console.error('❌ Error getting channel ID:', error);
     return null;
   }
+}
+
+/**
+ * Validate Slack conversation IDs for API calls.
+ * C = public/private channels, D = direct messages, G = group messages.
+ * @param {string} value
+ * @returns {boolean}
+ */
+function isSlackConversationId(value) {
+  return /^[CDG][A-Z0-9]{8,}$/i.test(String(value || '').trim());
 }
 
 /**

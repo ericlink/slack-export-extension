@@ -232,6 +232,10 @@ body {
   transition: all 0.15s;
 }
 
+.quick-add-btn + .quick-add-btn {
+  margin-top: 6px;
+}
+
 .quick-add-btn:hover {
   border-color: #4a154b;
   color: #4a154b;
@@ -241,6 +245,10 @@ body {
 .quick-add-btn:disabled {
   opacity: 0.4;
   cursor: default;
+}
+
+.cleanup-btn {
+  border-style: solid;
 }
 
 /* Export controls */

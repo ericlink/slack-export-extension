@@ -6,7 +6,7 @@ const DEFAULT_CONFIG = {
   fileNameFormat: "YYYYMMDD-HHmm-{channel}.md",
   includeTimestamps: true,
   includeThreadReplies: true,
-  historyDays: 7,
+  historyDays: 9999,
 
   // Batch export configuration
   channels: [],              // Array of channel config objects
@@ -26,18 +26,6 @@ const DEFAULT_CONFIG = {
  * (e.g. the "C0123456789" segment), or by using the Quick-add button in the popup.
  */
 const INITIAL_CHANNELS = [
-  // Tier 1 — High priority
-  { name: "team-general", channelId: "", tier: 1, type: "channel", enabled: true },
-  { name: "team-leads", channelId: "", tier: 1, type: "channel", enabled: true },
-  { name: "DM: Alice", channelId: "", tier: 1, type: "dm", enabled: true },
-  { name: "DM: Bob", channelId: "", tier: 1, type: "dm", enabled: true },
-
-  // Tier 2 — Medium priority
-  { name: "project-alpha", channelId: "", tier: 2, type: "channel", enabled: true },
-  { name: "DM: Charlie", channelId: "", tier: 2, type: "dm", enabled: true },
-
-  // Tier 3 — Low priority
-  { name: "announcements", channelId: "", tier: 3, type: "channel", enabled: true },
 ];
 
 /**

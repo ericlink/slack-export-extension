@@ -25,6 +25,7 @@ const summarySection = document.getElementById('summarySection');
 const exportControls = document.getElementById('exportControls');
 const settingsBtn = document.getElementById('settingsBtn');
 const quickAddBtn = document.getElementById('quickAddBtn');
+const cleanupChannelsBtn = document.getElementById('cleanupChannelsBtn');
 const quickAddSection = document.getElementById('quickAddSection');
 const openOptionsLink = document.getElementById('openOptionsLink');
 
@@ -86,6 +87,7 @@ combinedExportCb.addEventListener('change', async () => {
 });
 
 quickAddBtn.addEventListener('click', quickAddCurrentChannel);
+cleanupChannelsBtn.addEventListener('click', cleanupInvalidChannels);
 
 // ── Render ─────────────────────────────────────────────────────────
 
@@ -138,18 +140,19 @@ function renderChannels() {
 
     // Channel items
     for (const ch of tierChannels) {
+      const hasValidId = isSlackConversationId(ch.channelId);
       const item = document.createElement('div');
       item.className = 'channel-item';
       item.dataset.channelId = ch.channelId;
       if (!ch.enabled) item.classList.add('disabled');
-      if (!ch.channelId) item.classList.add('no-id');
+      if (!ch.channelId || !hasValidId) item.classList.add('no-id');
 
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.className = 'channel-cb';
       cb.dataset.channelId = ch.channelId;
       cb.dataset.tier = ch.tier;
-      cb.disabled = !ch.enabled || !ch.channelId;
+      cb.disabled = !ch.enabled || !ch.channelId || !hasValidId;
 
       const nameSpan = document.createElement('span');
       nameSpan.className = 'channel-name';
@@ -160,6 +163,9 @@ function renderChannels() {
       metaSpan.className = 'channel-meta';
       if (!ch.channelId) {
         metaSpan.textContent = 'no ID';
+        metaSpan.style.color = '#e01e5a';
+      } else if (!hasValidId) {
+        metaSpan.textContent = 'invalid ID';
         metaSpan.style.color = '#e01e5a';
       } else {
         metaSpan.textContent = formatLastExported(ch.channelId);
@@ -243,6 +249,16 @@ async function exportSelected() {
     setChannelStatus(channel.channelId, 'active');
 
     try {
+      if (!isSlackConversationId(channel.channelId)) {
+        setChannelStatus(channel.channelId, 'error');
+        results.push({
+          channel: channel.name,
+          success: false,
+          error: `Invalid conversation ID: ${channel.channelId}`
+        });
+        continue;
+      }
+
       // Calculate oldestTimestamp based on historyDays from now
       // Always respect historyDays by going back from current time
       const historyDaysMs = (config.historyDays || 7) * 86400 * 1000;
@@ -446,7 +462,7 @@ async function quickAddCurrentChannel() {
       action: 'GET_CURRENT_CHANNEL'
     });
 
-    if (response && response.channelId) {
+    if (response && response.channelId && isSlackConversationId(response.channelId)) {
       // Check if already exists
       const existing = channels.find(c => c.channelId === response.channelId);
       if (existing) {
@@ -462,7 +478,7 @@ async function quickAddCurrentChannel() {
         name: response.channelName || response.channelId,
         channelId: response.channelId,
         tier: 1,
-        type: 'channel',
+        type: inferChannelType(response.channelId),
         enabled: true
       };
 
@@ -473,6 +489,12 @@ async function quickAddCurrentChannel() {
       renderChannels();
       updateExportButton();
 
+      setTimeout(() => {
+        quickAddBtn.textContent = '+ Add current channel';
+        quickAddBtn.disabled = false;
+      }, 2000);
+    } else if (response && response.channelId) {
+      quickAddBtn.textContent = 'Could not resolve conversation ID';
       setTimeout(() => {
         quickAddBtn.textContent = '+ Add current channel';
         quickAddBtn.disabled = false;
@@ -491,6 +513,49 @@ async function quickAddCurrentChannel() {
       quickAddBtn.textContent = '+ Add current channel';
       quickAddBtn.disabled = false;
     }, 2000);
+  }
+}
+
+async function cleanupInvalidChannels() {
+  if (isExporting) return;
+
+  const invalidChannels = channels.filter(ch => !isSlackConversationId(ch.channelId));
+  if (invalidChannels.length === 0) {
+    cleanupChannelsBtn.textContent = 'No invalid channels';
+    setTimeout(() => {
+      cleanupChannelsBtn.textContent = 'Clean invalid channels';
+    }, 1800);
+    return;
+  }
+
+  cleanupChannelsBtn.disabled = true;
+  cleanupChannelsBtn.textContent = `Cleaning ${invalidChannels.length}...`;
+
+  try {
+    channels = channels.filter(ch => isSlackConversationId(ch.channelId));
+
+    const validChannelIds = new Set(channels.map(ch => ch.channelId));
+    lastExportTimestamps = Object.fromEntries(
+      Object.entries(lastExportTimestamps).filter(([channelId]) => validChannelIds.has(channelId))
+    );
+
+    await saveConfig({ channels, lastExportTimestamps });
+
+    renderChannels();
+    updateExportButton();
+    summarySection.className = 'summary-section';
+    summarySection.innerHTML = `Removed ${invalidChannels.length} invalid channel${invalidChannels.length === 1 ? '' : 's'}`;
+    summarySection.style.display = 'block';
+
+    cleanupChannelsBtn.textContent = `Removed ${invalidChannels.length}`;
+  } catch (error) {
+    console.error('Failed to clean channels:', error);
+    cleanupChannelsBtn.textContent = 'Cleanup failed';
+  } finally {
+    setTimeout(() => {
+      cleanupChannelsBtn.textContent = 'Clean invalid channels';
+      cleanupChannelsBtn.disabled = false;
+    }, 1800);
   }
 }
 
@@ -534,6 +599,17 @@ function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}
+
+function isSlackConversationId(value) {
+  return /^[CDG][A-Z0-9]{8,}$/i.test(String(value || '').trim());
+}
+
+function inferChannelType(channelId) {
+  const id = String(channelId || '').toUpperCase();
+  if (id.startsWith('D')) return 'dm';
+  if (id.startsWith('G')) return 'group';
+  return 'channel';
 }
 
 /**
