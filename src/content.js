@@ -1247,7 +1247,7 @@ function getCurrentChannelId() {
  * @param {Object} config - Configuration object
  * @returns {Promise<Object>} Map of file URL to local path
  */
-async function downloadFiles(files, channelName, token, config) {
+async function downloadFiles(files, channelName, token, config, exportPrefix) {
   const fileMap = {}; // Maps original URL to local path info
   const filesDir = `${config.downloadDirectory || 'slack-exports'}/${channelName}_files`;
   
@@ -1281,7 +1281,7 @@ async function downloadFiles(files, channelName, token, config) {
     }
     
     try {
-      const localPath = await downloadSingleFile(file, filesDir, token);
+      const localPath = await downloadSingleFile(file, filesDir, token, i, exportPrefix);
       if (localPath) {
         fileMap[file.url] = {
           localPath: localPath,
@@ -1313,15 +1313,17 @@ async function downloadFiles(files, channelName, token, config) {
  * @param {Object} file - File object with id, url, name, mimetype
  * @param {string} filesDir - Directory to save file in
  * @param {string} token - Slack auth token
+ * @param {number} fileIndex - Unique index for this export's files
+ * @param {string} exportPrefix - Export-scoped unique prefix for filenames
  * @param {number} retryCount - Current retry attempt (internal use)
  * @returns {Promise<string>} Local file path relative to download directory
  */
-async function downloadSingleFile(file, filesDir, token, retryCount = 0) {
+async function downloadSingleFile(file, filesDir, token, fileIndex = 0, exportPrefix = 'export', retryCount = 0) {
   const maxRetries = 2;
   
   try {
-    // Sanitize filename
-    const sanitizedName = sanitizeFileName(file.name);
+    // Pin a unique filename before download so links always match disk path.
+    const sanitizedName = buildUniqueAssetFilename(file.name, exportPrefix, fileIndex);
     const localPath = `${filesDir}/${sanitizedName}`;
     
     console.log(`⬇️ Downloading: ${file.name} -> ${localPath}${retryCount > 0 ? ` (retry ${retryCount}/${maxRetries})` : ''}`);
@@ -1346,7 +1348,7 @@ async function downloadSingleFile(file, filesDir, token, retryCount = 0) {
       if ((error.includes('401') || error.includes('Failed to fetch')) && retryCount < maxRetries) {
         console.log(`🔄 Retrying ${file.name} (attempt ${retryCount + 1}/${maxRetries})...`);
         await new Promise(resolve => setTimeout(resolve, 1000)); // Wait before retry
-        return downloadSingleFile(file, filesDir, token, retryCount + 1);
+        return downloadSingleFile(file, filesDir, token, fileIndex, exportPrefix, retryCount + 1);
       }
       
       throw new Error(error);
@@ -1358,7 +1360,7 @@ async function downloadSingleFile(file, filesDir, token, retryCount = 0) {
     if ((error.message.includes('401') || error.message.includes('Failed to fetch')) && retryCount < maxRetries) {
       console.log(`🔄 Retrying download of ${file.name}...`);
       await new Promise(resolve => setTimeout(resolve, 1000));
-      return downloadSingleFile(file, filesDir, token, retryCount + 1);
+      return downloadSingleFile(file, filesDir, token, fileIndex, exportPrefix, retryCount + 1);
     }
     
     console.error(`❌ Error downloading file ${file.name}:`, error);
@@ -1400,6 +1402,26 @@ function sanitizeFileName(filename) {
   }
   
   return sanitized;
+}
+
+/**
+ * Build a unique, stable file name for one export run.
+ * Example: 20260217-170512123-0007-image.png
+ * @param {string} originalName
+ * @param {string} exportPrefix
+ * @param {number} index
+ * @returns {string}
+ */
+function buildUniqueAssetFilename(originalName, exportPrefix, index) {
+  const sanitized = sanitizeFileName(originalName);
+  const lastDotIndex = sanitized.lastIndexOf('.');
+  const hasExt = lastDotIndex > 0 && lastDotIndex < sanitized.length - 1;
+  const ext = hasExt ? sanitized.slice(lastDotIndex) : '.bin';
+  const base = hasExt ? sanitized.slice(0, lastDotIndex) : sanitized;
+  const sequence = String(index + 1).padStart(4, '0');
+  const maxBaseLength = 140;
+  const safeBase = base.slice(0, maxBaseLength);
+  return `${exportPrefix}-${sequence}-${safeBase}${ext}`;
 }
 
 /**
@@ -1492,6 +1514,7 @@ function escapeRegex(str) {
 async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = null) {
   const config = await getConfig();
   const { token } = getSlackAuthToken();
+  const exportPrefix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   const oldestUnix = oldestTimestamp
     ? Math.floor(oldestTimestamp / 1000)
@@ -1648,7 +1671,7 @@ async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = nul
   // Wrap in try-catch to ensure markdown is still generated even if file downloads fail
   let fileMap = {};
   try {
-    fileMap = await downloadFiles(filesToDownload, channelName, token, config);
+    fileMap = await downloadFiles(filesToDownload, channelName, token, config, exportPrefix);
     
     // Update file references in messages to use local paths (strip base directory)
     const baseDirectory = config.downloadDirectory || 'slack-exports';
