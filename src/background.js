@@ -2,6 +2,63 @@
  * Background service worker for Slack Export Extension
  */
 
+const BATCH_EXPORT_STATE_KEY = 'batchExportState';
+const BATCH_EXPORT_STATE_STALE_MS = 45000;
+const DEFAULT_BATCH_EXPORT_STATE = {
+  active: false,
+  totalChannels: 0,
+  completedChannels: 0,
+  currentChannelId: '',
+  currentChannelName: '',
+  activityText: '',
+  stage: '',
+  messageCount: 0,
+  attachmentCount: 0,
+  fetchedThreads: 0,
+  totalThreads: 0,
+  progressPercent: 0,
+  channelStatuses: {},
+  updatedAt: 0
+};
+
+async function getBatchExportState() {
+  try {
+    const result = await chrome.storage.local.get(BATCH_EXPORT_STATE_KEY);
+    const state = { ...DEFAULT_BATCH_EXPORT_STATE, ...(result[BATCH_EXPORT_STATE_KEY] || {}) };
+    if (state.active && state.updatedAt && (Date.now() - state.updatedAt) > BATCH_EXPORT_STATE_STALE_MS) {
+      const staleState = {
+        ...state,
+        active: false,
+        stage: 'stale',
+        activityText: 'Export status stale',
+        updatedAt: Date.now()
+      };
+      await chrome.storage.local.set({ [BATCH_EXPORT_STATE_KEY]: staleState });
+      return staleState;
+    }
+    return state;
+  } catch (error) {
+    console.warn('Failed to load batch export state:', error);
+    return { ...DEFAULT_BATCH_EXPORT_STATE };
+  }
+}
+
+async function saveBatchExportState(nextState) {
+  const state = {
+    ...DEFAULT_BATCH_EXPORT_STATE,
+    ...nextState,
+    updatedAt: Date.now()
+  };
+  await chrome.storage.local.set({ [BATCH_EXPORT_STATE_KEY]: state });
+  return state;
+}
+
+function calcProgressPercent(completedChannels, totalChannels) {
+  if (!totalChannels || totalChannels <= 0) return 0;
+  const pct = Math.round((completedChannels / totalChannels) * 100);
+  return Math.max(0, Math.min(100, pct));
+}
+
 /**
  * Handle extension icon click
  */
@@ -136,6 +193,147 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'CONTENT_SCRIPT_READY') {
     console.log('✅ Content script ready on tab:', sender.tab?.id);
     return;
+  }
+
+  if (message.action === 'BATCH_EXPORT_SESSION') {
+    (async () => {
+      try {
+        const current = await getBatchExportState();
+        const { event, channelId, channelName, totalChannels, status } = message;
+
+        if (event === 'start') {
+          const total = Number(totalChannels || 0);
+          await saveBatchExportState({
+            active: true,
+            totalChannels: total,
+            completedChannels: 0,
+            currentChannelId: '',
+            currentChannelName: '',
+            activityText: 'Preparing export...',
+            stage: 'starting',
+            messageCount: 0,
+            attachmentCount: 0,
+            fetchedThreads: 0,
+            totalThreads: 0,
+            progressPercent: 0,
+            channelStatuses: {}
+          });
+        } else if (event === 'channel_start') {
+          const nextStatuses = { ...(current.channelStatuses || {}) };
+          if (channelId) nextStatuses[channelId] = 'active';
+          await saveBatchExportState({
+            ...current,
+            active: true,
+            currentChannelId: channelId || current.currentChannelId,
+            currentChannelName: channelName || current.currentChannelName,
+            stage: 'channel_start',
+            activityText: channelName ? `Starting ${channelName}...` : 'Starting channel...',
+            channelStatuses: nextStatuses
+          });
+        } else if (event === 'channel_done') {
+          const nextStatuses = { ...(current.channelStatuses || {}) };
+          if (channelId) {
+            nextStatuses[channelId] = status === 'error' ? 'error' : 'success';
+          }
+          const completed = Math.min(
+            Number(current.completedChannels || 0) + 1,
+            Number(current.totalChannels || 0)
+          );
+          await saveBatchExportState({
+            ...current,
+            completedChannels: completed,
+            progressPercent: calcProgressPercent(completed, Number(current.totalChannels || 0)),
+            channelStatuses: nextStatuses
+          });
+        } else if (event === 'finish') {
+          await saveBatchExportState({
+            ...current,
+            active: false,
+            currentChannelId: '',
+            currentChannelName: '',
+            stage: 'done',
+            activityText: 'Export complete',
+            fetchedThreads: 0,
+            totalThreads: 0,
+            progressPercent: 100
+          });
+        }
+
+        sendResponse({ success: true });
+      } catch (error) {
+        console.error('Failed to update batch export session state:', error);
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    return true;
+  }
+
+  if (message.action === 'BATCH_EXPORT_PROGRESS') {
+    (async () => {
+      try {
+        const current = await getBatchExportState();
+        const nextStatuses = { ...(current.channelStatuses || {}) };
+        const previousStatus = message.channelId ? nextStatuses[message.channelId] : null;
+        let completedChannels = Number(current.completedChannels || 0);
+
+        if (message.channelId && message.stage !== 'done') {
+          nextStatuses[message.channelId] = 'active';
+        } else if (message.channelId && message.stage === 'done') {
+          nextStatuses[message.channelId] = message.success === false ? 'error' : 'success';
+          if (previousStatus !== 'success' && previousStatus !== 'error') {
+            completedChannels += 1;
+          }
+        }
+
+        const totalChannels = Number(current.totalChannels || 0);
+        const isBatchComplete = message.stage === 'done' && totalChannels > 0 && completedChannels >= totalChannels;
+        const stage = isBatchComplete ? 'done' : (message.stage || current.stage);
+        let activityText = message.activityText || current.activityText;
+        if (!message.activityText) {
+          if (stage === 'fetching_messages') activityText = 'Fetching messages from Slack API...';
+          else if (stage === 'fetching_thread_replies') activityText = `Fetching thread replies (${message.fetchedThreads || 0}/${message.totalThreads || 0})...`;
+          else if (stage === 'enriching_messages') activityText = 'Processing messages...';
+          else if (stage === 'downloading_attachments') activityText = 'Downloading attachments...';
+          else if (stage === 'building_markdown') activityText = 'Building markdown files...';
+          else if (stage === 'done') activityText = 'Export complete';
+        }
+
+        await saveBatchExportState({
+          ...current,
+          active: isBatchComplete ? false : (current.active || message.stage !== 'done'),
+          currentChannelId: isBatchComplete ? '' : (message.channelId || current.currentChannelId),
+          currentChannelName: isBatchComplete ? '' : (message.channelName || current.currentChannelName),
+          completedChannels,
+          progressPercent: isBatchComplete
+            ? 100
+            : calcProgressPercent(completedChannels, totalChannels),
+          stage,
+          messageCount: Number(message.messageCount ?? current.messageCount ?? 0),
+          attachmentCount: Number(message.attachmentCount ?? current.attachmentCount ?? 0),
+          fetchedThreads: isBatchComplete ? 0 : Number(message.fetchedThreads ?? current.fetchedThreads ?? 0),
+          totalThreads: isBatchComplete ? 0 : Number(message.totalThreads ?? current.totalThreads ?? 0),
+          activityText,
+          channelStatuses: nextStatuses
+        });
+        sendResponse({ success: true });
+      } catch (error) {
+        console.error('Failed to persist batch export progress:', error);
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    return true;
+  }
+
+  if (message.action === 'GET_BATCH_EXPORT_STATE') {
+    (async () => {
+      try {
+        const state = await getBatchExportState();
+        sendResponse({ success: true, state });
+      } catch (error) {
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+    return true;
   }
   
   console.log('❓ Unknown message from content script:', message.action);

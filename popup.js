@@ -10,6 +10,10 @@ let config = {};
 let lastExportTimestamps = {};
 let activeTab = null;
 let isExporting = false;
+let activeExportChannelId = null;
+let liveStats = { messages: 0, attachments: 0 };
+let completedStats = { messages: 0, attachments: 0 };
+let channelLiveStats = { messages: 0, attachments: 0 };
 
 // ── DOM references ─────────────────────────────────────────────────
 
@@ -21,6 +25,10 @@ const combinedExportCb = document.getElementById('combinedExport');
 const progressSection = document.getElementById('progressSection');
 const progressBar = document.getElementById('progressBar');
 const progressText = document.getElementById('progressText');
+const activityText = document.getElementById('activityText');
+const progressMessages = document.getElementById('progressMessages');
+const progressAttachments = document.getElementById('progressAttachments');
+const progressSpinner = document.getElementById('progressSpinner');
 const summarySection = document.getElementById('summarySection');
 const exportControls = document.getElementById('exportControls');
 const settingsBtn = document.getElementById('settingsBtn');
@@ -61,6 +69,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     combinedExportCb.checked = config.combinedExport || false;
 
     renderChannels();
+    await restoreExportUiState();
     updateExportButton();
   } catch (error) {
     console.error('Popup init error:', error);
@@ -88,6 +97,12 @@ combinedExportCb.addEventListener('change', async () => {
 
 quickAddBtn.addEventListener('click', quickAddCurrentChannel);
 cleanupChannelsBtn.addEventListener('click', cleanupInvalidChannels);
+
+chrome.runtime.onMessage.addListener((message) => {
+  if (!isExporting || !message || message.action !== 'BATCH_EXPORT_PROGRESS') return;
+  if (activeExportChannelId && message.channelId && message.channelId !== activeExportChannelId) return;
+  handleLiveProgressUpdate(message);
+});
 
 // ── Render ─────────────────────────────────────────────────────────
 
@@ -236,17 +251,30 @@ async function exportSelected() {
   progressSection.style.display = 'block';
   summarySection.style.display = 'none';
   exportControls.style.display = 'none';
+  await notifyExportSession('start', { totalChannels: selected.length });
 
   // Disable all checkboxes during export
   channelListEl.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.disabled = true; });
 
   const results = [];
   let combinedMarkdown = '';
+  completedStats = { messages: 0, attachments: 0 };
+  channelLiveStats = { messages: 0, attachments: 0 };
+  if (progressSpinner) progressSpinner.style.animationPlayState = 'running';
+  setLiveStats(0, 0);
 
   for (let i = 0; i < selected.length; i++) {
     const channel = selected[i];
+    activeExportChannelId = channel.channelId;
+    channelLiveStats = { messages: 0, attachments: 0 };
+    setLiveStats(completedStats.messages, completedStats.attachments);
     updateProgress(i, selected.length, channel.name);
+    setActivity(`Starting ${channel.name}...`);
     setChannelStatus(channel.channelId, 'active');
+    await notifyExportSession('channel_start', {
+      channelId: channel.channelId,
+      channelName: channel.name
+    });
 
     try {
       if (!isSlackConversationId(channel.channelId)) {
@@ -272,6 +300,13 @@ async function exportSelected() {
       });
 
       if (response && response.success) {
+        const channelMessageCount = Number(response.messageCount || 0);
+        const channelAttachmentCount = Number(response.attachmentCount || 0);
+        setLiveStats(
+          completedStats.messages + channelMessageCount,
+          completedStats.attachments + channelAttachmentCount
+        );
+
         // Always download markdown file, regardless of message count
         // Ensure markdown exists - generate fallback if missing
         let markdownToDownload = response.markdown;
@@ -285,8 +320,10 @@ async function exportSelected() {
         console.log(`💾 Downloading markdown for ${channel.name} (${response.messageCount || 0} messages, ${markdownToDownload.length} chars)`);
 
         // If content script already saved markdown, avoid duplicate file.
+        let channelSaved = false;
         if (response.markdownSavedByContent) {
           console.log(`✅ Markdown already saved by content script for ${channel.name}`);
+          channelSaved = true;
         } else {
           // Trigger download via background script - always create file
           // Retry download if it fails
@@ -305,6 +342,7 @@ async function exportSelected() {
 
               if (downloadResponse && downloadResponse.success) {
                 downloadSuccess = true;
+                channelSaved = true;
                 break;
               } else {
                 downloadError = downloadResponse?.error || 'Download failed';
@@ -337,24 +375,50 @@ async function exportSelected() {
           combinedMarkdown += `\n\n---\n\n## ${channel.name}\n\n` + response.markdown.split('\n').slice(3).join('\n');
         }
 
-        // Update last exported timestamp
+        // Update last exported timestamp for any successful channel export.
+        // This reflects export completion even when save path differs.
         lastExportTimestamps[channel.channelId] = Date.now();
         await saveConfig({ lastExportTimestamps });
+        refreshChannelLastExportMeta(channel.channelId);
 
         setChannelStatus(channel.channelId, 'success');
-        results.push({ channel: channel.name, success: true, count: response.messageCount });
+        await notifyExportSession('channel_done', {
+          channelId: channel.channelId,
+          channelName: channel.name,
+          status: 'success'
+        });
+        completedStats.messages += channelMessageCount;
+        completedStats.attachments += channelAttachmentCount;
+        setLiveStats(completedStats.messages, completedStats.attachments);
+        results.push({
+          channel: channel.name,
+          success: true,
+          count: channelMessageCount,
+          attachments: channelAttachmentCount
+        });
       } else {
         setChannelStatus(channel.channelId, 'error');
+        await notifyExportSession('channel_done', {
+          channelId: channel.channelId,
+          channelName: channel.name,
+          status: 'error'
+        });
         results.push({ channel: channel.name, success: false, error: response?.error || 'Unknown error' });
       }
     } catch (error) {
       setChannelStatus(channel.channelId, 'error');
+      await notifyExportSession('channel_done', {
+        channelId: channel.channelId,
+        channelName: channel.name,
+        status: 'error'
+      });
       results.push({ channel: channel.name, success: false, error: error.message });
     }
 
     // Rate limit delay between channels (skip after last)
     if (i < selected.length - 1) {
       updateProgress(i + 1, selected.length, 'Waiting (rate limit)...');
+      setActivity('Waiting for rate limit...');
       await sleep(2500);
     }
   }
@@ -378,8 +442,13 @@ async function exportSelected() {
   }
 
   // Show summary
+  activeExportChannelId = null;
   updateProgress(selected.length, selected.length, 'Done!');
+  setActivity('Export complete');
+  setLiveStats(completedStats.messages, completedStats.attachments);
+  if (progressSpinner) progressSpinner.style.animationPlayState = 'paused';
   showSummary(results);
+  await notifyExportSession('finish');
 
   isExporting = false;
 
@@ -414,6 +483,113 @@ function updateProgress(current, total, label) {
     : `${current}/${total} channels exported`;
 }
 
+function setActivity(text) {
+  if (activityText) activityText.textContent = text || '';
+}
+
+function setLiveStats(messages, attachments) {
+  liveStats.messages = Number(messages || 0);
+  liveStats.attachments = Number(attachments || 0);
+  if (progressMessages) progressMessages.textContent = `Messages: ${liveStats.messages}`;
+  if (progressAttachments) progressAttachments.textContent = `Attachments: ${liveStats.attachments}`;
+}
+
+function handleLiveProgressUpdate(message) {
+  const stage = message.stage || '';
+  if (typeof message.messageCount === 'number' || typeof message.attachmentCount === 'number') {
+    channelLiveStats.messages = Math.max(channelLiveStats.messages, Number(message.messageCount || 0));
+    channelLiveStats.attachments = Math.max(channelLiveStats.attachments, Number(message.attachmentCount || 0));
+    setLiveStats(
+      completedStats.messages + channelLiveStats.messages,
+      completedStats.attachments + channelLiveStats.attachments
+    );
+  }
+
+  if (stage === 'fetching_messages') {
+    setActivity('Fetching messages from Slack API...');
+  } else if (stage === 'fetching_thread_replies') {
+    setActivity(`Fetching thread replies (${message.fetchedThreads || 0}/${message.totalThreads || 0})...`);
+  } else if (stage === 'enriching_messages') {
+    setActivity(`Processing messages (${message.processed || 0}/${message.total || 0})...`);
+  } else if (stage === 'downloading_attachments') {
+    setActivity(`Downloading attachments (${message.downloaded || 0}/${message.total || 0})...`);
+  } else if (stage === 'building_markdown') {
+    setActivity('Building markdown files...');
+  } else if (stage === 'done') {
+    setActivity('Channel export finished');
+  }
+}
+
+async function notifyExportSession(event, extra = {}) {
+  try {
+    await chrome.runtime.sendMessage({
+      action: 'BATCH_EXPORT_SESSION',
+      event,
+      ...extra
+    });
+  } catch (error) {
+    console.warn('Failed to sync export session state:', error);
+  }
+}
+
+async function restoreExportUiState() {
+  try {
+    const response = await chrome.runtime.sendMessage({ action: 'GET_BATCH_EXPORT_STATE' });
+    const state = response?.state;
+    if (!response?.success || !state) return;
+
+    if (state.channelStatuses && typeof state.channelStatuses === 'object') {
+      for (const [channelId, status] of Object.entries(state.channelStatuses)) {
+        if (status === 'active' || status === 'success' || status === 'error') {
+          setChannelStatus(channelId, status);
+        }
+      }
+    }
+
+    if (!state.active) return;
+
+    isExporting = true;
+    exportBtn.disabled = true;
+    progressSection.style.display = 'block';
+    exportControls.style.display = 'none';
+    summarySection.style.display = 'none';
+
+    activeExportChannelId = state.currentChannelId || null;
+    completedStats.messages = Number(state.messageCount || 0);
+    completedStats.attachments = Number(state.attachmentCount || 0);
+    channelLiveStats = { messages: 0, attachments: 0 };
+    setLiveStats(completedStats.messages, completedStats.attachments);
+    if (progressSpinner) progressSpinner.style.animationPlayState = 'running';
+
+    if (typeof state.progressPercent === 'number') {
+      progressBar.style.width = `${Math.max(0, Math.min(100, state.progressPercent))}%`;
+    }
+
+    if (state.totalChannels > 0) {
+      progressText.textContent = `${state.completedChannels || 0}/${state.totalChannels} — ${state.currentChannelName || 'Export in progress'}`;
+    } else {
+      progressText.textContent = 'Export in progress...';
+    }
+
+    const stage = String(state.stage || '');
+    if (stage === 'fetching_thread_replies') {
+      setActivity(`Fetching thread replies (${state.fetchedThreads || 0}/${state.totalThreads || 0})...`);
+    } else if (stage === 'downloading_attachments') {
+      setActivity('Downloading attachments...');
+    } else if (stage === 'enriching_messages') {
+      setActivity('Processing messages...');
+    } else if (stage === 'building_markdown') {
+      setActivity('Building markdown files...');
+    } else {
+      setActivity(state.activityText || 'Export in progress...');
+    }
+
+    channelListEl.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.disabled = true; });
+  } catch (error) {
+    console.warn('Failed to restore export UI state:', error);
+  }
+}
+
 function setChannelStatus(channelId, status) {
   const el = document.getElementById(`status-${channelId}`);
   if (!el) return;
@@ -433,10 +609,11 @@ function showSummary(results) {
   const successes = results.filter(r => r.success);
   const failures = results.filter(r => !r.success);
   const totalMessages = successes.reduce((sum, r) => sum + (r.count || 0), 0);
+  const totalAttachments = successes.reduce((sum, r) => sum + (r.attachments || 0), 0);
 
   let html = '';
   if (failures.length === 0) {
-    html = `Exported ${successes.length} channel${successes.length !== 1 ? 's' : ''} (${totalMessages} messages)`;
+    html = `Exported ${successes.length} channel${successes.length !== 1 ? 's' : ''} (${totalMessages} messages, ${totalAttachments} attachments)`;
     summarySection.className = 'summary-section';
   } else {
     html = `${successes.length} exported, ${failures.length} failed`;
@@ -448,6 +625,15 @@ function showSummary(results) {
 
   summarySection.innerHTML = html;
   summarySection.style.display = 'block';
+}
+
+function refreshChannelLastExportMeta(channelId) {
+  const item = channelListEl.querySelector(`.channel-item[data-channel-id="${channelId}"]`);
+  if (!item) return;
+  const meta = item.querySelector('.channel-meta');
+  if (!meta) return;
+  meta.textContent = formatLastExported(channelId);
+  meta.style.color = '';
 }
 
 // ── Quick-add current channel ──────────────────────────────────────

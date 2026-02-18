@@ -324,6 +324,28 @@ body {
   text-align: center;
 }
 
+.progress-activity {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  color: #4a154b;
+}
+
+.activity-text {
+  font-size: 12px;
+}
+
+.progress-stats {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  margin-bottom: 6px;
+  font-size: 11px;
+  color: #616061;
+}
+
 /* Summary */
 .summary-section {
   padding: 10px 16px;

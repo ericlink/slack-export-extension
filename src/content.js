@@ -51,11 +51,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'BATCH_EXPORT_CHANNEL') {
     console.log('📦 Batch export request for channel:', message.channelName);
     const { channelId, channelName, oldestTimestamp } = message;
+    const emitBatchProgress = (stage, extra = {}) => {
+      try {
+        chrome.runtime.sendMessage({
+          action: 'BATCH_EXPORT_PROGRESS',
+          channelId,
+          channelName,
+          stage,
+          ...extra
+        });
+      } catch (e) {
+        // Popup may be closed; progress updates are best effort only.
+      }
+    };
     (async () => {
       try {
-        const result = await exportChannelViaAPI(channelId, channelName, oldestTimestamp);
+        emitBatchProgress('fetching_messages', { messageCount: 0, attachmentCount: 0 });
+        const result = await exportChannelViaAPI(channelId, channelName, oldestTimestamp, emitBatchProgress);
         console.log(`✅ Batch export completed for ${channelName}:`, {
           messageCount: result.messageCount,
+          attachmentCount: result.attachmentCount,
           markdownLength: result.markdown?.length,
           hasMarkdown: !!result.markdown
         });
@@ -86,6 +101,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           markdownSavedByContent,
           markdownSaveError
         });
+        emitBatchProgress('done', {
+          success: true,
+          messageCount: result.messageCount || 0,
+          attachmentCount: result.attachmentCount || 0
+        });
       } catch (error) {
         console.error('❌ Batch export error for', channelName, ':', error);
         try {
@@ -95,12 +115,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({
             success: true,
             messageCount: 0,
+            attachmentCount: 0,
             markdown: errorMarkdown,
             channelName,
             markdownSavedByContent: !!saveRes.success,
             markdownSaveError: saveRes.error || null,
             error: error.message
           });
+          emitBatchProgress('done', { success: false, messageCount: 0, attachmentCount: 0 });
         } catch (fallbackError) {
           console.error('❌ Failed to generate fallback markdown:', fallbackError);
           const minimalMarkdown = `# Slack Export Extension Export: ${channelName}\n*Exported: ${new Date().toLocaleString()}*\n\n---\n\n*Note: Export encountered errors: ${error.message}*\n\n`;
@@ -116,12 +138,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({
             success: true,
             messageCount: 0,
+            attachmentCount: 0,
             markdown: minimalMarkdown,
             channelName,
             markdownSavedByContent,
             markdownSaveError: saveErrorMessage,
             error: error.message
           });
+          emitBatchProgress('done', { success: false, messageCount: 0, attachmentCount: 0 });
         }
       }
     })();
@@ -1273,12 +1297,14 @@ function isSlackConversationId(value) {
  * @param {Object} config - Configuration object
  * @returns {Promise<Object>} Map of file URL to local path
  */
-async function downloadFiles(files, channelName, token, config, exportPrefix) {
+async function downloadFiles(files, channelName, token, config, exportPrefix, onProgress = null) {
   const fileMap = {}; // Maps original URL to local path info
   const filesDir = `${config.downloadDirectory || 'slack-exports'}/${channelName}_files`;
+  const emit = typeof onProgress === 'function' ? onProgress : () => {};
   
   if (files.length === 0) {
     console.log('📁 No files to download');
+    emit({ downloaded: 0, total: 0 });
     return fileMap;
   }
   
@@ -1295,11 +1321,13 @@ async function downloadFiles(files, channelName, token, config, exportPrefix) {
   }
   
   console.log(`📦 Found ${uniqueFiles.length} unique files to download`);
+  emit({ downloaded: 0, total: uniqueFiles.length });
   
   // Download files sequentially with delays to avoid rate limiting
   // Slack has strict rate limits, so we'll download one at a time with delays
   for (let i = 0; i < uniqueFiles.length; i++) {
     const file = uniqueFiles[i];
+    emit({ downloaded: i, total: uniqueFiles.length, currentFile: file.name });
     
     // Add delay between file downloads (except for first file)
     if (i > 0) {
@@ -1328,6 +1356,7 @@ async function downloadFiles(files, channelName, token, config, exportPrefix) {
         error: true
       };
     }
+    emit({ downloaded: i + 1, total: uniqueFiles.length, currentFile: file.name });
   }
   
   console.log(`✅ Downloaded ${Object.keys(fileMap).length} files`);
@@ -1535,9 +1564,10 @@ function escapeRegex(str) {
  * @param {string} channelId - The Slack channel ID to export
  * @param {string} channelName - Human-readable channel name (used in markdown header)
  * @param {number|null} oldestTimestamp - If provided, fetch messages since this Unix ms timestamp; otherwise use historyDays
- * @returns {Promise<Object>} Result with messageCount, markdown, channelName
+ * @param {Function|null} onProgress - Optional progress callback
+ * @returns {Promise<Object>} Result with messageCount, attachmentCount, markdown, channelName
  */
-async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = null) {
+async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = null, onProgress = null) {
   const config = await getConfig();
   const { token } = getSlackAuthToken();
   const exportPrefix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -1545,21 +1575,28 @@ async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = nul
   const oldestUnix = oldestTimestamp
     ? Math.floor(oldestTimestamp / 1000)
     : Math.floor((Date.now() - (config.historyDays || 7) * 86400 * 1000) / 1000);
+  const emit = typeof onProgress === 'function' ? onProgress : () => {};
 
   console.log(`📆 Export window for ${channelName}: since ${new Date(oldestUnix * 1000).toISOString()}`);
-  const apiMessages = await getMessagesViaHistoryAPI(channelId, oldestUnix, token);
+  const apiMessages = await getMessagesViaHistoryAPI(channelId, oldestUnix, token, (data) => {
+    emit('fetching_messages', data);
+  });
 
   if (!apiMessages || apiMessages.length === 0) {
     console.log(`ℹ️ No messages found for ${channelName} in the selected date range.`);
     // Always generate markdown file, even if empty - ensures file is created
     const emptyMarkdown = convertToMarkdown([], channelName, config);
-    return { messageCount: 0, markdown: emptyMarkdown, channelName };
+    emit('building_markdown', { messageCount: 0, attachmentCount: 0 });
+    return { messageCount: 0, attachmentCount: 0, markdown: emptyMarkdown, channelName };
   }
 
   // Extract unique user IDs from messages and cache thread replies
   const userIds = new Set();
   const threadRepliesCache = new Map(); // Cache thread replies to avoid fetching twice
   let threadFetchCount = 0;
+  const totalThreadFetches = apiMessages.filter(
+    msg => config.includeThreadReplies && msg.thread_ts && msg.reply_count > 0
+  ).length;
   
   for (let i = 0; i < apiMessages.length; i++) {
     const msg = apiMessages[i];
@@ -1577,6 +1614,10 @@ async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = nul
         await new Promise(resolve => setTimeout(resolve, 800)); // 800ms delay between thread fetches
       }
       threadFetchCount++;
+      emit('fetching_thread_replies', {
+        fetchedThreads: threadFetchCount,
+        totalThreads: totalThreadFetches
+      });
       
       const repliesRaw = await fetchThreadReplies(channelId, msg.thread_ts, oldestUnix, token);
       // Cache thread replies for later use
@@ -1674,6 +1715,14 @@ async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = nul
       threadReplies,
       messageFiles: messageFiles // Store file references for later update
     });
+    if (enrichedMessages.length % 20 === 0 || enrichedMessages.length === apiMessages.length) {
+      emit('enriching_messages', {
+        processed: enrichedMessages.length,
+        total: apiMessages.length,
+        messageCount: enrichedMessages.length,
+        attachmentCount: filesToDownload.length
+      });
+    }
   }
   
   console.log(`📊 Enrichment complete: ${enrichedMessages.length} total, ${emptyContentCount} with empty content`);
@@ -1692,12 +1741,19 @@ async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = nul
   const messages = enrichedMessages
     .filter(msg => msg.content && msg.content.trim())
     .sort((a, b) => parseFloat(a.timestamp) - parseFloat(b.timestamp));
+  const attachmentCount = countUniqueFilesByUrl(filesToDownload);
 
   // Download files before generating markdown
   // Wrap in try-catch to ensure markdown is still generated even if file downloads fail
   let fileMap = {};
   try {
-    fileMap = await downloadFiles(filesToDownload, channelName, token, config, exportPrefix);
+    fileMap = await downloadFiles(filesToDownload, channelName, token, config, exportPrefix, (data) => {
+      emit('downloading_attachments', {
+        ...data,
+        messageCount: messages.length,
+        attachmentCount
+      });
+    });
     
     // Update file references in messages to use local paths (strip base directory)
     const baseDirectory = config.downloadDirectory || 'slack-exports';
@@ -1707,6 +1763,7 @@ async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = nul
     // Continue without updating file references - markdown will use original URLs
   }
 
+  emit('building_markdown', { messageCount: messages.length, attachmentCount });
   const markdown = convertToMarkdown(messages, channelName, config);
   
   // Ensure markdown is always a string and non-empty (should always have at least header)
@@ -1714,12 +1771,12 @@ async function exportChannelViaAPI(channelId, channelName, oldestTimestamp = nul
     console.error(`❌ Markdown generation failed for ${channelName} - got:`, typeof markdown, markdown);
     // Fallback: generate minimal markdown to ensure file is created
     const fallbackMarkdown = convertToMarkdown([], channelName, config);
-    return { messageCount: messages.length, markdown: fallbackMarkdown, channelName };
+    return { messageCount: messages.length, attachmentCount, markdown: fallbackMarkdown, channelName };
   }
   
   console.log(`✅ Processed ${messages.length} messages for ${channelName} (markdown: ${markdown.length} chars)`);
 
-  return { messageCount: messages.length, markdown, channelName };
+  return { messageCount: messages.length, attachmentCount, markdown, channelName };
 }
 
 /**
@@ -2013,6 +2070,22 @@ function collectFilesFromMessage(apiMsg) {
 }
 
 /**
+ * Count unique file entries by URL.
+ * @param {Array<Object>} files
+ * @returns {number}
+ */
+function countUniqueFilesByUrl(files) {
+  if (!Array.isArray(files) || files.length === 0) return 0;
+  const urls = new Set();
+  for (const file of files) {
+    if (file && file.url) {
+      urls.add(file.url);
+    }
+  }
+  return urls.size;
+}
+
+/**
  * Extract all content from a Slack message (text, files, blocks, etc.)
  * @param {Object} apiMsg - Slack API message object
  * @param {Object} userMap - Map of user IDs to display names
@@ -2170,9 +2243,10 @@ function extractBlockText(elements, userMap) {
  * @param {string} token - Slack auth token
  * @returns {Promise<Array>} Array of message objects
  */
-async function getMessagesViaHistoryAPI(channelId, oldestUnix, token) {
+async function getMessagesViaHistoryAPI(channelId, oldestUnix, token, onProgress = null) {
   try {
     console.log(`📥 Fetching messages for channel ${channelId} since ${new Date(oldestUnix * 1000).toISOString()}`);
+    const emit = typeof onProgress === 'function' ? onProgress : () => {};
     
     let allMessages = [];
     let cursor = '';
@@ -2233,6 +2307,12 @@ async function getMessagesViaHistoryAPI(channelId, oldestUnix, token) {
           allMessages = allMessages.concat(pageMessages);
           hasMore = data.has_more;
           cursor = data.response_metadata?.next_cursor || '';
+          emit({
+            page: pageCount,
+            fetched: pageMessages.length,
+            messageCount: allMessages.length,
+            hasMore
+          });
           
           console.log(`📨 Page ${pageCount}: Fetched ${pageMessages.length} messages (total: ${allMessages.length})`);
           success = true;
