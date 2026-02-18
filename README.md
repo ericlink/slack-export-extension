@@ -1,6 +1,6 @@
 # Slack Export Extension
 
-Easily export slack channels, file attachments and embedded images.  View as html or markdown.
+Easily export slack channels, dms, or groups, with file attachments and embedded images.  View as html or markdown.
 
 ## History
 
