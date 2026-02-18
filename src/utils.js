@@ -1,5 +1,5 @@
 /**
- * Utility functions for SlackSnap extension
+ * Utility functions for Slack Export Extension
  */
 
 /**
@@ -265,7 +265,7 @@ function escapeMarkdown(text) {
 
 // Make functions available globally
 if (typeof window !== 'undefined') {
-  window.SlackSnapUtils = {
+  window.SlackExportExtensionUtils = {
     formatDate,
     cleanText,
     extractChannelName,

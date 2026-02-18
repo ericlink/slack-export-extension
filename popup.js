@@ -1,5 +1,5 @@
 /**
- * SlackSnap Batch Export Popup
+ * Slack Export Extension Batch Export Popup
  * Orchestrates multi-channel export via the content script running on the Slack page.
  */
 
@@ -263,7 +263,7 @@ async function exportSelected() {
           console.warn(`⚠️ No markdown content for ${channel.name}, generating fallback...`);
           const now = new Date();
           const exportTime = now.toLocaleString();
-          markdownToDownload = `# SlackSnap Export: ${channel.name}\n*Exported: ${exportTime}*\n\n---\n\n*Note: No messages found or export encountered errors*\n\n`;
+          markdownToDownload = `# Slack Export Extension Export: ${channel.name}\n*Exported: ${exportTime}*\n\n---\n\n*Note: No messages found or export encountered errors*\n\n`;
         }
 
         console.log(`💾 Downloading markdown for ${channel.name} (${response.messageCount || 0} messages, ${markdownToDownload.length} chars)`);
@@ -346,7 +346,7 @@ async function exportSelected() {
   // Download combined file if enabled
   if (combinedExportCb.checked && combinedMarkdown) {
     const now = new Date();
-    const header = `# SlackSnap Combined Export\n*Exported: ${now.toLocaleString()}*\n`;
+    const header = `# Slack Export Extension Combined Export\n*Exported: ${now.toLocaleString()}*\n`;
     try {
       await chrome.runtime.sendMessage({
         action: 'DOWNLOAD_FILE',

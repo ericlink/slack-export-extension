@@ -1,5 +1,5 @@
 /**
- * SlackSnap content script - handles Slack message extraction and export
+ * Slack Export Extension content script - handles Slack message extraction and export
  * Uses Slack's API for reliable message and user data extraction
  */
 
@@ -13,10 +13,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     console.log('🚀 Starting export process...');
     
     // Check if utilities are available
-    if (typeof window.SlackSnapUtils !== 'undefined') {
-      window.SlackSnapUtils.showNotification('Starting export...', 'success');
+    if (typeof window.SlackExportExtensionUtils !== 'undefined') {
+      window.SlackExportExtensionUtils.showNotification('Starting export...', 'success');
     } else {
-      console.warn('⚠️ SlackSnapUtils not available yet');
+      console.warn('⚠️ Extension utils not available yet');
     }
     
     // Try API method first - most reliable for large workspaces
@@ -37,8 +37,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           })
           .catch(domError => {
             console.error('❌ Both API and DOM export failed:', domError);
-            if (typeof window.SlackSnapUtils !== 'undefined') {
-              window.SlackSnapUtils.showNotification(`Export failed: ${apiError.message}`, 'error');
+            if (typeof window.SlackExportExtensionUtils !== 'undefined') {
+              window.SlackExportExtensionUtils.showNotification(`Export failed: ${apiError.message}`, 'error');
             }
             sendResponse({ success: false, error: `API: ${apiError.message}, DOM: ${domError.message}` });
           });
@@ -103,7 +103,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           });
         } catch (fallbackError) {
           console.error('❌ Failed to generate fallback markdown:', fallbackError);
-          const minimalMarkdown = `# SlackSnap Export: ${channelName}\n*Exported: ${new Date().toLocaleString()}*\n\n---\n\n*Note: Export encountered errors: ${error.message}*\n\n`;
+          const minimalMarkdown = `# Slack Export Extension Export: ${channelName}\n*Exported: ${new Date().toLocaleString()}*\n\n---\n\n*Note: Export encountered errors: ${error.message}*\n\n`;
           let saveErrorMessage = null;
           let markdownSavedByContent = false;
           try {
@@ -131,7 +131,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'GET_CURRENT_CHANNEL') {
     // Used by the popup's "Quick-add current channel" feature
     const channelId = getCurrentChannelId();
-    const channelName = window.SlackSnapUtils ? window.SlackSnapUtils.extractChannelName() : null;
+    const channelName = window.SlackExportExtensionUtils ? window.SlackExportExtensionUtils.extractChannelName() : null;
     sendResponse({ channelId, channelName });
     return;
   }
@@ -151,8 +151,8 @@ async function exportMessages() {
     const config = await getConfig();
     
     // Show initial progress
-    if (typeof window.SlackSnapUtils !== 'undefined') {
-      window.SlackSnapUtils.showNotification('Loading more messages...', 'success');
+    if (typeof window.SlackExportExtensionUtils !== 'undefined') {
+      window.SlackExportExtensionUtils.showNotification('Loading more messages...', 'success');
     }
     
     // First, try to load more messages by scrolling
@@ -191,8 +191,8 @@ async function exportMessages() {
         console.log(`📜 Scroll ${i + 1}/20: ${currentCount} messages (${newMessages} new)`);
         
         // Update progress notification
-        if (i % 3 === 0 && typeof window.SlackSnapUtils !== 'undefined') {
-          window.SlackSnapUtils.showNotification(`Loading messages... ${currentCount} found`, 'success');
+        if (i % 3 === 0 && typeof window.SlackExportExtensionUtils !== 'undefined') {
+          window.SlackExportExtensionUtils.showNotification(`Loading messages... ${currentCount} found`, 'success');
         }
         
         // If no new messages loaded, increment counter
@@ -220,8 +220,8 @@ async function exportMessages() {
     const messages = extractVisibleMessages();
     
     if (messages.length === 0) {
-      if (typeof window.SlackSnapUtils !== 'undefined') {
-        window.SlackSnapUtils.showNotification('No messages found in current view', 'error');
+      if (typeof window.SlackExportExtensionUtils !== 'undefined') {
+        window.SlackExportExtensionUtils.showNotification('No messages found in current view', 'error');
       }
       return;
     }
@@ -236,8 +236,8 @@ async function exportMessages() {
     });
     
     // Get channel information
-    const channelName = window.SlackSnapUtils.extractChannelName();
-    const filename = window.SlackSnapUtils.generateFilename(channelName, config);
+    const channelName = window.SlackExportExtensionUtils.extractChannelName();
+    const filename = window.SlackExportExtensionUtils.generateFilename(channelName, config);
     const htmlFilename = getHtmlFilename(filename);
     
     // Convert to markdown
@@ -270,8 +270,8 @@ async function exportMessages() {
         console.log(`✅ Files saved to Downloads/${config.downloadDirectory}/${filename} and ${htmlFilename}`);
         
         // Show success notification
-        if (typeof window.SlackSnapUtils !== 'undefined') {
-          window.SlackSnapUtils.showNotification(
+        if (typeof window.SlackExportExtensionUtils !== 'undefined') {
+          window.SlackExportExtensionUtils.showNotification(
             `Exported ${messages.length} messages to ${config.downloadDirectory}/${filename} and ${htmlFilename}`,
             'success'
           );
@@ -319,8 +319,8 @@ async function exportMessages() {
         
         console.log('✅ Direct download successful (Downloads root)');
         
-        if (typeof window.SlackSnapUtils !== 'undefined') {
-          window.SlackSnapUtils.showNotification(
+        if (typeof window.SlackExportExtensionUtils !== 'undefined') {
+          window.SlackExportExtensionUtils.showNotification(
             `Exported ${messages.length} messages to Downloads/${filename} and Downloads/${htmlFilename}`,
             'success'
           );
@@ -491,7 +491,7 @@ function extractMessageData(element) {
     for (const selector of senderSelectors) {
       const senderElement = element.querySelector(selector);
       if (senderElement) {
-        messageData.sender = window.SlackSnapUtils.cleanText(senderElement.textContent);
+        messageData.sender = window.SlackExportExtensionUtils.cleanText(senderElement.textContent);
         break;
       }
     }
@@ -580,7 +580,7 @@ function extractMessageData(element) {
       if (messageData.timestamp) {
         allText = allText.replace(messageData.timestamp, '');
       }
-      messageData.content = window.SlackSnapUtils.cleanText(allText);
+      messageData.content = window.SlackExportExtensionUtils.cleanText(allText);
     }
     
     // Extract thread replies if they exist
@@ -643,7 +643,7 @@ function extractTextContent(element) {
     
     // Get remaining text content
     const remainingText = element.textContent || '';
-    content += window.SlackSnapUtils.cleanText(remainingText);
+    content += window.SlackExportExtensionUtils.cleanText(remainingText);
     
     // Clean up extraction markers
     const extractedElements = element.querySelectorAll('[data-extracted]');
@@ -668,7 +668,7 @@ function extractTextContent(element) {
  */
 async function saveBatchChannelMarkdown(channelName, markdown) {
   const config = await getConfig();
-  const filename = window.SlackSnapUtils.generateFilename(channelName, config);
+  const filename = window.SlackExportExtensionUtils.generateFilename(channelName, config);
   const htmlFilename = getHtmlFilename(filename);
   const html = convertMarkdownToHtmlDocument(markdown, channelName);
 
@@ -730,14 +730,14 @@ function convertToMarkdown(messages, channelName, config) {
   const now = new Date();
   const exportTime = now.toLocaleString();
   
-  let markdown = `# SlackSnap Export: ${channelName}\n`;
+  let markdown = `# Slack Export Extension Export: ${channelName}\n`;
   markdown += `*Exported: ${exportTime}*\n\n`;
   markdown += `---\n\n`;
   
   for (const message of messages) {
     // Add sender and timestamp
     if (message.sender) {
-      markdown += `**${window.SlackSnapUtils.escapeMarkdown(message.sender)}**`;
+      markdown += `**${window.SlackExportExtensionUtils.escapeMarkdown(message.sender)}**`;
       
       if (config.includeTimestamps && message.timestamp) {
         console.log('🔍 Formatting timestamp:', message.timestamp, typeof message.timestamp);
@@ -759,7 +759,7 @@ function convertToMarkdown(messages, channelName, config) {
       markdown += `**Thread Replies:**\n`;
       for (const reply of message.threadReplies) {
         if (reply.sender) {
-          markdown += `  • **${window.SlackSnapUtils.escapeMarkdown(reply.sender)}**: `;
+          markdown += `  • **${window.SlackExportExtensionUtils.escapeMarkdown(reply.sender)}**: `;
         }
         if (reply.content) {
           markdown += `${reply.content}\n`;
@@ -791,7 +791,7 @@ function convertToHtml(messages, channelName, config) {
  * @returns {string}
  */
 function convertMarkdownToHtmlDocument(markdown, channelName) {
-  const safeTitle = escapeHtml(channelName || 'SlackSnap Export');
+  const safeTitle = escapeHtml(channelName || 'Slack Export Extension Export');
   const bodyHtml = markdownToBasicHtml(normalizeFenceBoundaries(markdown || ''));
 
   return `<!doctype html>
@@ -799,7 +799,7 @@ function convertMarkdownToHtmlDocument(markdown, channelName) {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SlackSnap Export: ${safeTitle}</title>
+  <title>Slack Export Extension Export: ${safeTitle}</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 24px; line-height: 1.5; color: #111827; }
     h1, h2, h3 { margin-top: 1.4em; margin-bottom: 0.5em; }
@@ -1704,20 +1704,20 @@ async function exportMessagesViaAPI() {
   try {
     console.log('🚀 Starting robust API-based message export...');
     const config = await getConfig();
-    window.SlackSnapUtils.showNotification('Getting messages via API...', 'success');
+    window.SlackExportExtensionUtils.showNotification('Getting messages via API...', 'success');
 
     const channelId = getCurrentChannelId();
     if (!channelId) throw new Error('Could not determine channel ID');
-    const channelName = window.SlackSnapUtils.extractChannelName();
+    const channelName = window.SlackExportExtensionUtils.extractChannelName();
 
     const result = await exportChannelViaAPI(channelId, channelName);
 
     if (result.messageCount === 0) {
-      window.SlackSnapUtils.showNotification('No messages found in the selected date range.', 'success');
+      window.SlackExportExtensionUtils.showNotification('No messages found in the selected date range.', 'success');
       return;
     }
 
-    const filename = window.SlackSnapUtils.generateFilename(channelName, config);
+    const filename = window.SlackExportExtensionUtils.generateFilename(channelName, config);
     const htmlFilename = getHtmlFilename(filename);
     const htmlContent = convertMarkdownToHtmlDocument(result.markdown, channelName);
 
@@ -1726,7 +1726,7 @@ async function exportMessagesViaAPI() {
       data: { filename, content: result.markdown, directory: config.downloadDirectory }
     }, (res) => {
       if (!res || !res.success) {
-        window.SlackSnapUtils.showNotification(`❌ Markdown download failed: ${res?.error || 'Unknown error'}`, 'error');
+        window.SlackExportExtensionUtils.showNotification(`❌ Markdown download failed: ${res?.error || 'Unknown error'}`, 'error');
         return;
       }
 
@@ -1740,16 +1740,16 @@ async function exportMessagesViaAPI() {
         }
       }, (htmlRes) => {
         if (htmlRes && htmlRes.success) {
-          window.SlackSnapUtils.showNotification(`✅ Exported ${result.messageCount} messages to ${filename} and ${htmlFilename}`, 'success');
+          window.SlackExportExtensionUtils.showNotification(`✅ Exported ${result.messageCount} messages to ${filename} and ${htmlFilename}`, 'success');
         } else {
-          window.SlackSnapUtils.showNotification(`❌ HTML download failed: ${htmlRes?.error || 'Unknown error'}`, 'error');
+          window.SlackExportExtensionUtils.showNotification(`❌ HTML download failed: ${htmlRes?.error || 'Unknown error'}`, 'error');
         }
       });
     });
 
   } catch (error) {
     console.error('❌ API export failed:', error);
-    window.SlackSnapUtils.showNotification(`❌ Export failed: ${error.message}`, 'error');
+    window.SlackExportExtensionUtils.showNotification(`❌ Export failed: ${error.message}`, 'error');
   }
 }
 
@@ -2002,7 +2002,7 @@ function extractMessageContent(apiMsg, userMap, messageFiles = []) {
     try {
       let text = String(apiMsg.text);
       // Clean the text
-      text = window.SlackSnapUtils.cleanText(text);
+      text = window.SlackExportExtensionUtils.cleanText(text);
       // Replace user mentions
       text = text.replace(/<@([A-Z0-9]+)>/g, (_, id) => '@' + (userMap[id] || 'unknown'));
       // Include text if it has any content after cleaning
@@ -2054,7 +2054,7 @@ function extractMessageContent(apiMsg, userMap, messageFiles = []) {
           parts.push(blockText);
         }
       } else if (block.text && block.text.text) {
-        let blockText = window.SlackSnapUtils.cleanText(block.text.text);
+        let blockText = window.SlackExportExtensionUtils.cleanText(block.text.text);
         blockText = blockText.replace(/<@([A-Z0-9]+)>/g, (_, id) => '@' + (userMap[id] || 'unknown'));
         if (blockText.trim()) {
           parts.push(blockText);
@@ -2108,7 +2108,7 @@ function extractBlockText(elements, userMap) {
   const parts = [];
   for (const element of elements) {
     if (element.type === 'text' && element.text) {
-      let text = window.SlackSnapUtils.cleanText(element.text);
+      let text = window.SlackExportExtensionUtils.cleanText(element.text);
       text = text.replace(/<@([A-Z0-9]+)>/g, (_, id) => '@' + (userMap[id] || 'unknown'));
       parts.push(text);
     } else if (element.type === 'rich_text_section' && element.elements) {
@@ -2128,7 +2128,7 @@ function extractBlockText(elements, userMap) {
       const linkText = element.text || element.url;
       parts.push(`[${linkText}](${element.url})`);
     } else if (element.text) {
-      let text = window.SlackSnapUtils.cleanText(element.text);
+      let text = window.SlackExportExtensionUtils.cleanText(element.text);
       text = text.replace(/<@([A-Z0-9]+)>/g, (_, id) => '@' + (userMap[id] || 'unknown'));
       parts.push(text);
     }
@@ -2296,14 +2296,14 @@ async function fetchThreadReplies(channelId, threadTs, oldestUnix, token, retryC
   }
 }
 
-console.log('🚀 SlackSnap content script loaded - VERSION 2.0 (with full timestamp fix)');
+console.log('🚀 Slack Export Extension content script loaded - VERSION 2.0 (with full timestamp fix)');
 console.log('📍 Current page:', window.location.href);
 console.log('📄 Page title:', document.title);
 
 // Check if dependencies are loaded
 console.log('🔍 Checking dependencies...');
 console.log('- getConfig available:', typeof getConfig !== 'undefined');
-console.log('- SlackSnapUtils available:', typeof window.SlackSnapUtils !== 'undefined');
+console.log('- extension utils available:', typeof window.SlackExportExtensionUtils !== 'undefined');
 
 // Notify background script that content script is ready
 try {
@@ -2314,7 +2314,7 @@ try {
 }
 
 // Development and troubleshooting utilities
-window.slackSnapDebug = {
+window.slackExportExtensionDebug = {
   // Test basic DOM message extraction
   testExtraction: () => extractVisibleMessages(),
   
@@ -2347,4 +2347,4 @@ window.slackSnapDebug = {
   testAPIExport: () => exportMessagesViaAPI().catch(console.error)
 };
 
-// Debug functions: window.slackSnapDebug.testAuth(), .testAPI(), .testAPIExport(), .testExtraction(), .testDOMExport()
+// Debug functions: window.slackExportExtensionDebug.testAuth(), .testAPI(), .testAPIExport(), .testExtraction(), .testDOMExport()

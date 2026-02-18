@@ -1,5 +1,5 @@
 /**
- * Background service worker for SlackSnap extension
+ * Background service worker for Slack Export Extension
  */
 
 /**
@@ -518,7 +518,7 @@ async function handleBlobDownload(data) {
  */
 chrome.runtime.onInstalled.addListener((details) => {
   if (details.reason === 'install') {
-    console.log('SlackSnap extension installed');
+    console.log('Slack Export Extension installed');
     
     // Set default configuration
     chrome.storage.sync.set({

@@ -1,5 +1,5 @@
 /**
- * Options page script for SlackSnap extension
+ * Options page script for Slack Export Extension
  */
 
 // DOM elements

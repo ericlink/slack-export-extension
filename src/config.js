@@ -1,5 +1,5 @@
 /**
- * Default configuration for SlackSnap extension
+ * Default configuration for Slack Export Extension
  */
 const DEFAULT_CONFIG = {
   downloadDirectory: "slack-exports",
